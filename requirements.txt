@@ -1,0 +1,9 @@
+ujson
+numpy
+spacy
+tensorboard
+tensorflow
+tensorboardX
+tqdm
+urllib3
+torch==1.5.1
