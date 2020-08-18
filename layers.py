@@ -12,31 +12,82 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from util import masked_softmax
 
 
+class CharacterLevelEmbeddings(nn.Module):
+    """
+    Class that converts input words to their CNN-based embeddings.
+    """
+
+    def __init__(self, char_vectors, embed_size, kernel_size=5):
+        """
+        Init the Embedding layer for one language
+        embed_size (int): Embedding size for the output
+        vocab_size (int): Vocabulary size
+        """
+        super(CharacterLevelEmbeddings, self).__init__()
+
+        self.embed_size = embed_size
+
+        self.char_embedding = nn.Embedding.from_pretrained(char_vectors)
+        char_embed_size = self.char_embedding.embedding_dim
+        self.cnn = nn.Conv1d(
+            in_channels=char_embed_size,
+            out_channels=embed_size,
+            kernel_size=kernel_size,
+            bias=True)
+        self.maxpool = nn.MaxPool1d(12)
+
+    def forward(self, x):
+        """
+        Looks up character-based CNN embeddings for the words in a batch of sentences.
+        x: Tensor of integers of shape (sentence_length, batch_size, max_word_length)
+        output: Tensor of shape (sentence_length, batch_size, embed_size), containing the
+        CNN-based embeddings for each word of the sentences in the batch
+        """
+
+        x_emb = self.char_embedding(x)
+
+        batch_size, sentence_length, max_word_length, char_embed_size = x_emb.size()
+
+        x_reshaped = x_emb.view(batch_size * sentence_length, max_word_length, char_embed_size)
+        # reorder to (batchsize*sen_len, char_embed_size, max_word_length)
+        # in order to feed embeddings into cnn
+        x_conv_input = x_reshaped.permute(0, 2, 1)
+
+        x_conv = self.cnn(x_conv_input)
+
+        #print(x_conv.size())
+        x_conv = self.maxpool(torch.relu(x_conv)).squeeze()
+        #print(x_conv.size())
+        output = x_conv.view(batch_size, sentence_length, -1)
+
+        return output
+
+
 class Embedding(nn.Module):
     """Embedding layer used by BiDAF, without the character-level component.
-
     Word-level embeddings are further refined using a 2-layer Highway Encoder
     (see `HighwayEncoder` class for details).
-
     Args:
         word_vectors (torch.Tensor): Pre-trained word vectors.
         hidden_size (int): Size of hidden activations.
         drop_prob (float): Probability of zero-ing out activations
     """
 
-    def __init__(self, word_vectors, hidden_size, drop_prob):
+    def __init__(self, word_vectors, char_indices, hidden_size, drop_prob):
         super(Embedding, self).__init__()
         self.drop_prob = drop_prob
         self.embed = nn.Embedding.from_pretrained(word_vectors)
         self.proj = nn.Linear(word_vectors.size(1), hidden_size, bias=False)
         self.hwy = HighwayEncoder(2, hidden_size)
+        self.char_embed = CharacterLevelEmbeddings(char_indices, hidden_size)
 
-    def forward(self, x):
+    def forward(self, x, c):
         emb = self.embed(x)  # (batch_size, seq_len, embed_size)
         emb = F.dropout(emb, self.drop_prob, self.training)
         emb = self.proj(emb)  # (batch_size, seq_len, hidden_size)
         emb = self.hwy(emb)  # (batch_size, seq_len, hidden_size)
-
+        char_emb = self.char_embed(c)
+        emb = torch.cat([emb, char_emb], dim=2)
         return emb
 
 
